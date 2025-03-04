@@ -5,10 +5,13 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.97"
+bincode = "1.3.3"
 chrono = "0.4.40"
 hex = "0.4.3"
 log = "0.4.26"
 num-bigint = "0.4.6"
 once_cell = "1.20.3"
+rocksdb = "0.23.0"
 rs_merkle = "1.5.0"
+serde = { version = "1.0.218", features = ["derive"] }
 sha2 = "0.10.8"
