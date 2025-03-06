@@ -9,11 +9,14 @@ use crate::{
     transaction::{DummyTransaction, Transaction},
 };
 
-// 2min span
-const TARGET_TIME_SPAN: u64 = 120;
-// 10 blocks adjust
-const DIFFICULTY_ADJUST_INTERVAL: u64 = 10;
-pub const DEFAULT_DIFFICULTY: u32 = 0x1d00_ffff;
+pub mod blockchain_control {
+    // 2min span
+    pub const TARGET_TIME_SPAN: u64 = 120;
+    // 10 blocks adjust
+    pub const DIFFICULTY_ADJUST_INTERVAL: u64 = 10;
+    pub const DEFAULT_DIFFICULTY: u32 = 0x1d00_ffff;
+}
+
 /// ## BlockChain
 ///
 /// DB storage layout:
@@ -32,62 +35,101 @@ pub struct BlockChain {
     cur_bits: u32,
 }
 
+mod db_keys {
+    use serde::Serialize;
+
+    use crate::{block::Block, hash::Hashable, transaction::Transaction};
+
+    pub const LAST_HASH: &[u8] = b"last_hash";
+    pub const HEIGHT: &[u8] = b"height";
+    pub const CUR_BITS: &[u8] = b"cur_bits";
+
+    pub fn block_key<T: Transaction + Serialize>(block: &Block<T>) -> Vec<u8> {
+        format!("block_{}", block.header.hash_string()).into_bytes()
+    }
+
+    pub fn block_key_from_hash(hash: &[u8]) -> Vec<u8> {
+        format!("block_{}", hex::encode(hash)).into_bytes()
+    }
+
+    pub fn height_key(height: u64) -> Vec<u8> {
+        format!("height_{}", height).into_bytes()
+    }
+
+    // pub fn parse_height_key(key: &[u8]) -> Option<u64> {
+    //     let prefix = b"height_";
+    //     key.strip_prefix(prefix)
+    //         .and_then(|s| std::str::from_utf8(s).ok())
+    //         .and_then(|s| s.parse().ok())
+    // }
+}
+
 impl BlockChain {
     pub fn new(path: &str) -> Result<Self> {
         let mut opts = Options::default();
         opts.create_if_missing(true);
-        opts.set_compression_type(rocksdb::DBCompressionType::Lz4);
+        opts.set_compression_type(rocksdb::DBCompressionType::Zstd);
         opts.set_max_open_files(512);
 
         let db = DB::open(&opts, path)?;
 
-        if db.get(b"last_hash")?.is_none() {
+        if db.get(db_keys::LAST_HASH)?.is_none() {
             let genesis = Block::<DummyTransaction>::genesis();
             let hash = genesis.header.hash();
 
             let mut batch = WriteBatch::default();
-            batch.put(b"last_hash", &hash);
-            batch.put(
-                format!("block_{}", hex::encode(&hash)),
-                bincode::serialize(&genesis)?,
-            );
-            batch.put(b"height_0", &hash);
-            batch.put(b"height", &0u64.to_le_bytes());
-            batch.put(b"cur_bits", &genesis.header.bits.to_le_bytes());
+            batch.put(db_keys::LAST_HASH, &hash);
+            batch.put(db_keys::block_key(&genesis), bincode::serialize(&genesis)?);
+            batch.put(db_keys::height_key(0), &hash);
+            batch.put(db_keys::HEIGHT, &0u64.to_le_bytes());
+            batch.put(db_keys::CUR_BITS, &genesis.header.bits.to_le_bytes());
             db.write(batch)?;
         }
 
         let cur_bits = db
-            .get(b"cur_bits")?
+            .get(db_keys::CUR_BITS)?
             .map(|v| u32::from_le_bytes(v[..4].try_into().unwrap()))
-            .unwrap_or(DEFAULT_DIFFICULTY);
+            .unwrap_or(blockchain_control::DEFAULT_DIFFICULTY);
         Ok(Self { db, cur_bits })
     }
 
-    pub fn add_block<T: Transaction + Serialize>(&self, block: Block<T>) -> Result<()> {
+    pub fn add_block<T: Transaction + Serialize + for<'a> Deserialize<'a>>(
+        &self,
+        block: Block<T>,
+    ) -> Result<()> {
+        self.validate_new(&block)?;
         let mut batch = WriteBatch::default();
         let block_hash = block.header.hash();
 
-        batch.put(
-            format!("block_{}", hex::encode(&block_hash)),
-            bincode::serialize(&block)?,
-        );
-        batch.put(b"last_hash", &block_hash);
+        batch.put(db_keys::block_key(&block), bincode::serialize(&block)?);
+        batch.put(db_keys::LAST_HASH, &block_hash);
 
         let last_height = self.get_height()?;
-        batch.put(format!("height_{}", last_height + 1), &block_hash);
+        batch.put(db_keys::height_key(last_height + 1), &block_hash);
         self.db.write(batch)?;
         Ok(())
+    }
+
+    fn validate_new<T: Transaction + Serialize + for<'a> Deserialize<'a>>(
+        &self,
+        block: &Block<T>,
+    ) -> Result<()> {
+        let last_block = self.get_last_block()?;
+        if block.validate(&last_block) {
+            Ok(())
+        } else {
+            bail!("Invalid block!");
+        }
     }
 
     pub fn get_block<T: Transaction + Serialize + for<'a> Deserialize<'a>>(
         &self,
         height: u64,
     ) -> Result<Block<T>> {
-        let Some(block_hash) = self.db.get(format!("height_{}", height))? else {
+        let Some(block_hash) = self.db.get(db_keys::height_key(height))? else {
             bail!("Block hash not found in given height!");
         };
-        let Some(block_raw) = &self.db.get(format!("block_{}", hex::encode(&block_hash)))? else {
+        let Some(block_raw) = &self.db.get(db_keys::block_key_from_hash(&block_hash))? else {
             bail!("Block not found in given hash!");
         };
 
@@ -104,7 +146,7 @@ impl BlockChain {
         let Some(Ok((_, block_hash))) = iter.next() else {
             bail!("No block in blockchain!");
         };
-        let Some(block_raw) = &self.db.get(format!("block_{}", hex::encode(&block_hash)))? else {
+        let Some(block_raw) = &self.db.get(db_keys::block_key_from_hash(&block_hash))? else {
             bail!("Block not found in given hash!");
         };
 
@@ -115,20 +157,22 @@ impl BlockChain {
     pub fn get_difficulty<T: Transaction + Serialize + for<'a> Deserialize<'a>>(
         &mut self,
     ) -> Result<u32> {
-        let height = self.get_height()?;
-        // height >= 10.
-        if height % DIFFICULTY_ADJUST_INTERVAL != 0 {
+        let height  = self.get_height()?;
+        
+        if height % blockchain_control::DIFFICULTY_ADJUST_INTERVAL != 0 {
             return Ok(self.cur_bits);
         }
-        let first_block: Block<T> = self.get_block(height - DIFFICULTY_ADJUST_INTERVAL)?;
+        // safety: height <= interval is excluded by % interval operaiton.
+        let first_block: Block<T> =
+            self.get_block(height - blockchain_control::DIFFICULTY_ADJUST_INTERVAL)?;
         let last_block: Block<T> = self.get_last_block()?;
 
-        let actual_span = last_block.header.timestamp - first_block.header.timestamp;
         // avoid divide zero
-        let actual_span = actual_span.max(1);
+        let actual_span = (last_block.header.timestamp - first_block.header.timestamp).max(1);
 
         let prev_target = ProofWork::from_bits(first_block.header.bits).target();
-        let mut new_target = prev_target.clone() * TARGET_TIME_SPAN / actual_span as u64;
+        let mut new_target =
+            prev_target.clone() * blockchain_control::TARGET_TIME_SPAN / actual_span as u64;
 
         let max_target = prev_target.clone() * BigUint::from(4u32);
         let min_target = prev_target.clone() / BigUint::from(4u32);
@@ -136,7 +180,7 @@ impl BlockChain {
 
         let new_bits = target_to_bits(new_target);
 
-        self.db.put(b"cur_bits", &new_bits.to_le_bytes())?;
+        self.db.put(db_keys::CUR_BITS, &new_bits.to_le_bytes())?;
         self.cur_bits = new_bits;
         Ok(new_bits)
     }
@@ -144,9 +188,10 @@ impl BlockChain {
     fn get_height(&self) -> Result<u64> {
         let Some(height) = self
             .db
-            .get(b"height")
+            .get(db_keys::HEIGHT)
             .map(|v| v.map(|b| u64::from_le_bytes(b[..8].try_into().unwrap())))?
         else {
+            // assert: Must exist genesis
             return Ok(0);
         };
 

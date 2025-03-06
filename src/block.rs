@@ -1,3 +1,5 @@
+use std::ops::Deref;
+
 use chrono::Utc;
 use num_bigint::BigUint;
 use rs_merkle::{MerkleTree, algorithms::Sha256 as MerkleSha256};
@@ -5,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    chain::DEFAULT_DIFFICULTY,
+    chain::blockchain_control,
     hash::{Hashable, bits_to_target},
     transaction::Transaction,
 };
@@ -44,14 +46,7 @@ impl Hashable for BlockHeader {
 }
 
 impl<T: Transaction + Serialize> Block<T> {
-    fn merkle_root(&self) -> Option<Vec<u8>> {
-        let leaves: Vec<[u8; 32]> = self.txs.iter().map(|tx| tx.hash()).collect();
-        let mt: MerkleTree<MerkleSha256> = MerkleTree::from_leaves(&leaves);
-        let root = mt.root();
-        root.map(|x| x.to_vec())
-    }
-    // TODO: Dynamic difficulty.
-    fn validate(&self, prev: &Block<T>) -> bool {
+    pub fn validate(&self, prev: &Block<T>) -> bool {
         let prev_valid = self.header.prev_hash == prev.header.hash();
         let time_valid = self.header.timestamp > prev.header.timestamp;
         let merkle_valid = {
@@ -75,7 +70,7 @@ impl<T: Transaction + Serialize> Block<T> {
                 prev_hash: "0".repeat(64).as_bytes().to_vec(),
                 merkle_root: "0".repeat(64).as_bytes().to_vec(),
                 timestamp: 1685000000,
-                bits: DEFAULT_DIFFICULTY,
+                bits: blockchain_control::DEFAULT_DIFFICULTY,
                 nonce: 0,
             },
             txs: Vec::new(),
@@ -85,6 +80,13 @@ impl<T: Transaction + Serialize> Block<T> {
     pub fn mine(&mut self) {
         let pow = ProofWork::from_bits(self.header.bits);
         self.header = pow.run(self.header.clone())
+    }
+
+    fn merkle_root(&self) -> Option<Vec<u8>> {
+        let leaves: Vec<[u8; 32]> = self.txs.iter().map(|tx| tx.hash()).collect();
+        let mt: MerkleTree<MerkleSha256> = MerkleTree::from_leaves(&leaves);
+        let root = mt.root();
+        root.map(|x| x.to_vec())
     }
 }
 
@@ -118,7 +120,7 @@ impl ProofWork {
     }
 
     pub fn run(&self, mut bh: BlockHeader) -> BlockHeader {
-        let nonce = 0u64;
+        let mut nonce = 0u64;
         loop {
             bh.nonce = nonce;
             let hash = bh.hash();
@@ -130,12 +132,19 @@ impl ProofWork {
                 return bh;
             }
 
-            nonce.wrapping_add(1);
+            nonce = nonce.wrapping_add(1);
 
             if nonce % 1_000_000 == 0 {
                 bh.timestamp = Utc::now().timestamp();
                 log::debug!("Retrying with timestamp {}", bh.timestamp);
             }
         }
+    }
+}
+
+impl Deref for ProofWork {
+    type Target = BigUint;
+    fn deref(&self) -> &Self::Target {
+        &self.target
     }
 }

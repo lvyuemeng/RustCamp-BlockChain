@@ -2,7 +2,11 @@ use crate::hash::Hashable;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest,Sha256};
 
-pub trait Transaction: Hashable {}
+pub trait Transaction: Hashable {
+	fn validate() -> bool {
+		true
+	}
+}
 
 #[derive(Debug,Serialize,Deserialize)]
 pub struct DummyTransaction;

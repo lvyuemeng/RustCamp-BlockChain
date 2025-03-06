@@ -2,6 +2,9 @@ use num_bigint::BigUint;
 
 pub trait Hashable {
     fn hash(&self) -> [u8; 32];
+    fn hash_string(&self) -> String {
+        hex::encode(self.hash())
+    }
 }
 
 const COEFF_MASK:u32 = 0x007f_ffff;
