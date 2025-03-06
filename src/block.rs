@@ -1,21 +1,21 @@
-use std::ops::Deref;
+use std::{fmt::{self, Display, Formatter}, ops::Deref};
 
+use anyhow::{bail,Result};
 use chrono::Utc;
 use num_bigint::BigUint;
-use rs_merkle::{MerkleTree, algorithms::Sha256 as MerkleSha256};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
     chain::blockchain_control,
     hash::{Hashable, bits_to_target},
-    transaction::Transaction,
+    transaction::{Transaction, Transactions},
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Block<T: Transaction + Serialize> {
     pub header: BlockHeader,
-    txs: Vec<T>,
+    pub txs: Transactions<T>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -46,9 +46,29 @@ impl Hashable for BlockHeader {
 }
 
 impl<T: Transaction + Serialize> Block<T> {
+    pub fn new(prev: &Block<T>, txs: Transactions<T>, bits: u32) -> Result<Block<T>> {
+        let merkle_root = match txs.merkle_root() {
+            Some(root) => root,
+            None => bail!("No merkle root found!"),
+        };
+        let block = Block {
+            header: BlockHeader {
+                prev_hash: prev.header.hash().to_vec(),
+                merkle_root,
+                timestamp: Utc::now().timestamp(),
+                bits,
+                nonce: 0,
+            },
+            txs,
+        };
+        Ok(block)
+    }
+
     pub fn validate(&self, prev: &Block<T>) -> bool {
         let prev_valid = self.header.prev_hash == prev.header.hash();
+        eprintln!("prev_valid: {}", prev_valid);
         let time_valid = self.header.timestamp > prev.header.timestamp;
+        eprintln!("time_valid: {}", time_valid);
         let merkle_valid = {
             let Some(calc) = self.merkle_root() else {
                 return false;
@@ -60,11 +80,12 @@ impl<T: Transaction + Serialize> Block<T> {
             let pow = ProofWork::from_bits(self.header.bits);
             pow.is_valid(&self.header.hash())
         };
+        eprintln!("pow_valid: {}", pow_valid);
 
         prev_valid && time_valid && merkle_valid && pow_valid
     }
 
-    pub fn genesis() -> Block<T> {
+    pub fn genesis<H: Transaction + Default + Serialize>() -> Block<H> {
         Block {
             header: BlockHeader {
                 prev_hash: "0".repeat(64).as_bytes().to_vec(),
@@ -73,7 +94,7 @@ impl<T: Transaction + Serialize> Block<T> {
                 bits: blockchain_control::DEFAULT_DIFFICULTY,
                 nonce: 0,
             },
-            txs: Vec::new(),
+            txs: Transactions::<H>::test_new(),
         }
     }
 
@@ -83,10 +104,25 @@ impl<T: Transaction + Serialize> Block<T> {
     }
 
     fn merkle_root(&self) -> Option<Vec<u8>> {
-        let leaves: Vec<[u8; 32]> = self.txs.iter().map(|tx| tx.hash()).collect();
-        let mt: MerkleTree<MerkleSha256> = MerkleTree::from_leaves(&leaves);
-        let root = mt.root();
-        root.map(|x| x.to_vec())
+        self.txs.merkle_root()
+    }
+}
+
+ impl Display for BlockHeader {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        let s = format!("
+            block:\n\
+            \ttimestamp: {}\n\
+            \tbits: {}\n\
+            \tnonce: {}\n\
+        ",self.timestamp,self.bits,self.nonce);
+        write!(f,"{}",s)
+    }
+}
+
+impl<T:Transaction+Serialize>  Display for Block<T> {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        write!(f, "{}", self.header)
     }
 }
 
