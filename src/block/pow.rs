@@ -10,12 +10,12 @@ use crate::{
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct POW {
+pub struct PoW {
     pub bits: u32,
     pub nonce: u64,
 }
 
-impl Hashable for POW {
+impl Hashable for PoW {
     fn hash(&self) -> [u8; 32] {
         let mut hasher = Sha256::new();
         hasher.update(self.bits.to_le_bytes());
@@ -24,7 +24,7 @@ impl Hashable for POW {
     }
 }
 
-impl Proof for POW {
+impl Proof for PoW {
     type Config = u32;
     fn validate(&self, _prev: &Self, header_hash: &[u8]) -> bool {
         let target = bits_to_target(self.bits);
@@ -46,20 +46,16 @@ impl Proof for POW {
     }
 }
 
-impl POW {
+impl PoW {
     pub fn target(&self) -> BigUint {
         bits_to_target(self.bits)
     }   
-    
-    pub fn from_bits(bits:u32) ->  BigUint {
-        bits_to_target(bits)
-    }
     
     pub fn is_valid(&self, hash: &[u8]) -> bool {
         BigUint::from_bytes_be(hash) <= self.target()
     }
     
-    pub fn run(&self, mut bh: BlockHeader<POW>) -> BlockHeader<POW> {
+    pub fn run(&self, mut bh: BlockHeader<PoW>) -> BlockHeader<PoW> {
         let mut nonce = 0u64;
         loop {
             bh.proof.nonce = nonce;
@@ -80,7 +76,7 @@ impl POW {
     }
 }
 
-impl<T: Transaction + Serialize> Block<T, POW> {
+impl<T: Transaction + Serialize> Block<T, PoW> {
     pub fn mine(&mut self) {
         self.header = self.header.proof.run(self.header.clone())
     }

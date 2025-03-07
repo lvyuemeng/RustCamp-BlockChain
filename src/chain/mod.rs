@@ -1,12 +1,16 @@
+pub mod consensus;
+pub mod pow;
+
 use std::path::Path;
 
 use anyhow::{Result, bail};
+use consensus::{Consensus, PoWConfig};
 use rocksdb::{DB, Options, WriteBatch};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    block::{Block, Proof, Transaction},
-    hash::{Hashable, target_to_bits},
+    block::{Block, DummyTransaction, Proof, Transaction},
+    hash::Hashable,
 };
 
 pub mod blockchain_control {
@@ -15,113 +19,33 @@ pub mod blockchain_control {
     pub const DEFAULT_DIFFICULTY: u32 = 0x1f00_ffff;
 }
 
-pub mod consensus {
-    use serde::{Deserialize, Serialize};
-
-    use crate::block::{pow::POW, Block, Proof, Transaction};
-    use crate::chain::{blockchain_control, BlockChain};
-    use crate::hash::target_to_bits;
-
-
-    #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub struct PoWConfig {
-        pub target_timespan: u64,
-        pub difficulty_adjust_interval: u64,
-        pub initial_difficulty: u32,
-        pub allow_mining_reward: bool,
-        pub block_reward: u64,
-    }
-
-    #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub struct PoSConfig {
-        pub min_stake_amount: u64,
-        pub stake_lock_period: u64, // pledge blocks
-        pub annual_interest_rate: f64,
-        pub validator_count: usize,
-        pub epoch_length: u64,
-        pub security_deposit: u64,
-    }
-    
-    pub struct Consensus<C,H:Proof> {
-        pub config:C,
-        _mark:std::marker::PhantomData<H>
-    }
-    
-    impl<C,H:Proof> Consensus<C,H> {
-        fn new(config: C) -> Self {
-            Self { config, _mark: std::marker::PhantomData }
-        }
-    }
-
-    impl Consensus<PoWConfig, POW> {
-        fn adjust_difficulty<T:Transaction>(&self, chain: &BlockChain<PoWConfig,POW>) -> u32 {
-        let height = chain.get_height()?;
-        if height % self.config.initial_difficulty != 0 || height == 0 {
-            // TODO!
-            return Ok(self.);
-        }
-        let first_block: Block<T,POW> =
-            self.get_block(height - blockchain_control::DIFFICULTY_ADJUST_INTERVAL)?;
-        let last_block: Block<T,POW> = self.get_last_block()?;
-
-        let actual_span = (last_block.header.timestamp - first_block.header.timestamp).max(1);
-        let prev_target = POW::from_bits(first_block.header.proof.bits);
-        let new_target =
-            prev_target.clone() * blockchain_control::TARGET_TIME_SPAN / actual_span as u64;
-        let new_target = new_target.clamp(prev_target.clone() / 4u32, prev_target.clone() * 4u32);
-        let new_bits = target_to_bits(new_target);
-
-        self.db.put(DbKeys::CUR_BITS, &new_bits.to_le_bytes())?;
-        self.cur_bits = new_bits;
-        Ok(new_bits)
-        }
-    }
-    
-    impl Default for Consensus<PoWConfig, POW> {
-        fn default() -> Self {
-            Self {
-                config: PoWConfig {
-                    target_timespan: blockchain_control::TARGET_TIME_SPAN,
-                    difficulty_adjust_interval: blockchain_control::DIFFICULTY_ADJUST_INTERVAL,
-                    initial_difficulty: blockchain_control::DEFAULT_DIFFICULTY,
-                    allow_mining_reward: true,
-                    block_reward: 50,
-                },
-                _mark: std::marker::PhantomData
-            }
-        }
-    }
-    
-    impl Consensus<PoSConfig, POS> {} 
-}
-
 struct DbKeys;
 
 impl DbKeys {
-    const LAST_HASH: &'static [u8] = b"last_hash";
-    const CUR_HEIGHT: &'static [u8] = b"height";
-    const CUR_BITS: &'static [u8] = b"cur_bits";
+    pub const LAST_HASH: &'static [u8] = b"last_hash";
+    pub const CUR_HEIGHT: &'static [u8] = b"height";
+    pub const CUR_STATE: &'static [u8] = b"state";
 
-    fn block_key(hash: &[u8]) -> Vec<u8> {
+    pub fn block_key(hash: &[u8]) -> Vec<u8> {
         format!("block_{}", hex::encode(hash)).into_bytes()
     }
 
-    fn hash_from_block_key(key: &[u8]) -> Option<Vec<u8>> {
+    pub fn hash_from_block_key(key: &[u8]) -> Option<Vec<u8>> {
         key.strip_prefix(b"block_").map(|s| s.to_vec())
     }
 
-    fn height_key(height: u64) -> Vec<u8> {
+    pub fn height_key(height: u64) -> Vec<u8> {
         format!("height_{:016x}", height).into_bytes()
     }
 }
 
-pub struct BlockChain<CC,H: Proof> {
+pub struct BlockChain<C> {
     db: DB,
-    cs: consensus::Consensus<CC,H>
+    cs: Consensus<C>,
 }
 
-impl BlockChain {
-    pub fn new(path: impl AsRef<Path>) -> Result<Self> {
+impl<C: Serialize + for<'a> Deserialize<'a> + Default> BlockChain<C> {
+    pub fn new<P: Proof>(path: impl AsRef<Path>) -> Result<Self> {
         let mut opts = Options::default();
         opts.create_if_missing(true);
         opts.set_compression_type(rocksdb::DBCompressionType::Zstd);
@@ -130,14 +54,14 @@ impl BlockChain {
         log::info!("Opened db at {:?}", path.as_ref().display());
         let db = DB::open(&opts, path)?;
 
-        let cur_bits = match db.get(DbKeys::CUR_BITS)? {
-            Some(bits) => u32::from_le_bytes(bits[..4].try_into().unwrap()),
-            None => blockchain_control::DEFAULT_DIFFICULTY,
+        let cur_state = match db.get(DbKeys::CUR_STATE)? {
+            Some(state) => bincode::deserialize(&state)?,
+            None => C::default(),
         };
 
         if db.get(DbKeys::height_key(0))?.is_none() {
             log::info!("No last hash, Creating genesis block");
-            let genesis: Block<DummyTransaction> = Block::<DummyTransaction>::genesis();
+            let genesis: Block<DummyTransaction, P> = Block::<DummyTransaction, P>::genesis();
             let hash = genesis.header.hash();
 
             let mut batch = WriteBatch::default();
@@ -145,16 +69,22 @@ impl BlockChain {
             batch.put(DbKeys::LAST_HASH, &hash);
             batch.put(DbKeys::height_key(0), &hash);
             batch.put(DbKeys::CUR_HEIGHT, &0u64.to_le_bytes());
-            batch.put(DbKeys::CUR_BITS, &genesis.header.bits.to_le_bytes());
+            batch.put(DbKeys::CUR_STATE, bincode::serialize(&cur_state)?);
             db.write(batch)?;
         }
-        log::info!("Current difficulty: {}", cur_bits);
-        Ok(Self { db, cur_bits })
+
+        Ok(Self {
+            db,
+            cs: Consensus::new(cur_state),
+        })
     }
 
-    pub fn add_block<T: Transaction + Serialize + for<'a> Deserialize<'a>>(
+    pub fn add_block<
+        T: Transaction + for<'a> Deserialize<'a>,
+        P: Proof + for<'a> Deserialize<'a>,
+    >(
         &self,
-        block: Block<T>,
+        block: Block<T, P>,
     ) -> Result<()> {
         self.validate_new(&block)?;
         let mut batch = WriteBatch::default();
@@ -171,9 +101,12 @@ impl BlockChain {
         Ok(())
     }
 
-    fn validate_new<T: Transaction + Serialize + for<'a> Deserialize<'a>>(
+    fn validate_new<
+        T: Transaction + for<'a> Deserialize<'a>,
+        P: Proof + for<'a> Deserialize<'a>,
+    >(
         &self,
-        block: &Block<T>,
+        block: &Block<T, P>,
     ) -> Result<()> {
         if block.validate(&self.get_last_block()?) {
             Ok(())
@@ -182,10 +115,13 @@ impl BlockChain {
         }
     }
 
-    pub fn get_block<T: Transaction + Serialize + for<'a> Deserialize<'a>>(
+    pub fn get_block<
+        T: Transaction + for<'a> Deserialize<'a>,
+        P: Proof + for<'a> Deserialize<'a>,
+    >(
         &self,
         height: u64,
-    ) -> Result<Block<T>> {
+    ) -> Result<Block<T, P>> {
         let block_hash = self
             .db
             .get(DbKeys::height_key(height))?
@@ -197,9 +133,12 @@ impl BlockChain {
         Ok(bincode::deserialize(&block_raw)?)
     }
 
-    pub fn get_last_block<T: Transaction + Serialize + for<'a> Deserialize<'a>>(
+    pub fn get_last_block<
+        T: Transaction + for<'a> Deserialize<'a>,
+        P: Proof + for<'a> Deserialize<'a>,
+    >(
         &self,
-    ) -> Result<Block<T>> {
+    ) -> Result<Block<T, P>> {
         self.get_block(self.get_height()?)
     }
 
