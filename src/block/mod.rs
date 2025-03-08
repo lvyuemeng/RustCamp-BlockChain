@@ -1,8 +1,8 @@
-pub mod pow;
 pub mod pos;
+pub mod pow;
 use std::fmt::{self, Display, Formatter};
 
-use anyhow::{bail,Result};
+use anyhow::{Result, bail};
 use chrono::Utc;
 use log::debug;
 use rs_merkle::{MerkleTree, algorithms::Sha256 as MerkleSha256};
@@ -27,14 +27,14 @@ pub struct BlockHeader<H: Proof> {
 
 pub trait Proof: Hashable + Serialize + Clone {
     type Config: Clone;
-    fn validate(&self, prev:&Self,header_hash: &[u8]) -> bool;
+    fn validate(&self, prev: &Self, header_hash: &[u8]) -> bool;
     fn genesis_config() -> Self;
     fn new(ctx: Self::Config) -> Self;
 }
 
 pub trait Transaction: Hashable + Serialize {
     fn verify(&self) -> bool {
-        true
+        false
     }
 }
 
@@ -59,7 +59,7 @@ impl<T: Transaction, H: Proof> Block<T, H> {
         self.txs.merkle_root()
     }
 
-    pub fn new(prev: &Block<T, H>, txs: Transactions<T>, bits: H::Config) -> Result<Block<T, H>> {
+    pub fn new(prev: &Block<T, H>, txs: Transactions<T>, cfg: H::Config) -> Result<Block<T, H>> {
         let merkle_root = match txs.merkle_root() {
             Some(root) => root,
             None => bail!("No merkle root found!"),
@@ -69,17 +69,21 @@ impl<T: Transaction, H: Proof> Block<T, H> {
                 prev_hash: prev.header.hash().to_vec(),
                 merkle_root,
                 timestamp: Utc::now().timestamp(),
-                proof: H::new(bits),
+                proof: H::new(cfg),
             },
             txs,
         };
         Ok(block)
     }
 
+    pub fn set_proof(&mut self, proof: H) {
+        self.header.proof = proof;
+    }
+
     pub fn validate(&self, prev: &Block<T, H>) -> bool {
         let prev_valid = self.header.prev_hash == prev.header.hash();
         debug!("prev_valid: {}", prev_valid);
-        let time_valid = self.header.timestamp > prev.header.timestamp;
+        let time_valid = self.header.timestamp >= prev.header.timestamp;
         debug!("time_valid: {}", time_valid);
         let merkle_valid = {
             let Some(calc) = self.merkle_root() else {
@@ -88,13 +92,16 @@ impl<T: Transaction, H: Proof> Block<T, H> {
             calc == self.header.merkle_root
         };
 
-        let proof_valid = self.header.proof.validate(&prev.header.proof,&self.header.hash());
+        let proof_valid = self
+            .header
+            .proof
+            .validate(&prev.header.proof, &self.header.hash());
         debug!("proof_valid: {}", proof_valid);
 
-        prev_valid && time_valid && merkle_valid &&proof_valid 
+        prev_valid && time_valid && merkle_valid && proof_valid
     }
 
-    pub fn genesis<TD:Transaction+Default>() -> Block<TD,H> {
+    pub fn genesis<TD: Transaction + Default>() -> Block<TD, H> {
         Block {
             header: BlockHeader {
                 prev_hash: "0".repeat(64).as_bytes().to_vec(),

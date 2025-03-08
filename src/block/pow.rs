@@ -49,12 +49,12 @@ impl Proof for PoW {
 impl PoW {
     pub fn target(&self) -> BigUint {
         bits_to_target(self.bits)
-    }   
-    
+    }
+
     pub fn is_valid(&self, hash: &[u8]) -> bool {
         BigUint::from_bytes_be(hash) <= self.target()
     }
-    
+
     pub fn run(&self, mut bh: BlockHeader<PoW>) -> BlockHeader<PoW> {
         let mut nonce = 0u64;
         loop {

@@ -45,7 +45,7 @@ pub struct BlockChain<C> {
 }
 
 impl<C: Serialize + for<'a> Deserialize<'a> + Default> BlockChain<C> {
-    pub fn new<P: Proof>(path: impl AsRef<Path>) -> Result<Self> {
+    pub fn new<T: Transaction + Default, P: Proof>(path: impl AsRef<Path>) -> Result<Self> {
         let mut opts = Options::default();
         opts.create_if_missing(true);
         opts.set_compression_type(rocksdb::DBCompressionType::Zstd);
@@ -61,7 +61,7 @@ impl<C: Serialize + for<'a> Deserialize<'a> + Default> BlockChain<C> {
 
         if db.get(DbKeys::height_key(0))?.is_none() {
             log::info!("No last hash, Creating genesis block");
-            let genesis: Block<DummyTransaction, P> = Block::<DummyTransaction, P>::genesis();
+            let genesis: Block<T, P> = Block::<T, P>::genesis();
             let hash = genesis.header.hash();
 
             let mut batch = WriteBatch::default();

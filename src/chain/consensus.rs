@@ -23,7 +23,7 @@ pub struct PoWConfig {
     pub cur_bits: u32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct PoSConfig {
     #[serde(skip)]
     pub min_stake_amount: u64,
@@ -37,9 +37,12 @@ pub struct PoSConfig {
     pub epoch_length: u64,
     #[serde(skip)]
     pub security_deposit: u64,
+    #[serde(skip)]
+    pub signature: Vec<u8>,
+    pub validator: Vec<u8>,
 }
 
-#[derive(Debug,Clone,Default)]
+#[derive(Debug, Clone, Default)]
 pub struct Consensus<C> {
     pub config: C,
 }
