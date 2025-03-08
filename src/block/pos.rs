@@ -151,7 +151,7 @@ impl Proof for PoS {
         let pub_key = VerifyingKey::from_bytes(&key).expect("invalid public key");
         let signature = Signature::from_slice(&self.signature).expect("invalid signature");
 
-        pub_key.verify(header_hash, &signature).is_ok()
+        pub_key.verify(header_hash, &signature).is_ok() && self.stakes.contains_key(&self.validator)
     }
 
     fn genesis_config() -> Self {
@@ -176,10 +176,7 @@ impl Proof for PoS {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        block::{Block, DummyTransaction},
-        chain::BlockChain,
-    };
+    use crate::{block::Block, chain::BlockChain};
     use ed25519_dalek::SigningKey;
     use rand_core::OsRng;
     use std::env::temp_dir;
@@ -193,7 +190,7 @@ mod tests {
         let db_dir = temp_dir().join(format!("blockchain_test_{}", random_suffix));
 
         std::fs::create_dir_all(&db_dir).unwrap();
-        let chain = BlockChain::new::<PoS>(db_dir).unwrap();
+        let chain = BlockChain::new::<PoSTransaction, PoS>(db_dir).unwrap();
 
         chain
     }
@@ -231,31 +228,59 @@ mod tests {
         let mut pos_chain = test_db::<PoSConfig>();
         println!(
             "Genesis Block: {:?}",
-            pos_chain.get_block::<DummyTransaction, PoS>(0)
+            pos_chain.get_block::<PoSTransaction, PoS>(0)
         );
 
-        pos_chain
-            .add_block(
-                Block::new(
-                    &pos_chain.get_last_block::<_, PoS>().unwrap(),
-                    Transactions(vec![PoSTransaction {
-                        tx_type: TransactionType::Stake { amount: 50 },
-                        signer: format!("{:016x?}", secret_key.verifying_key().as_bytes()),
-                        ..Default::default()
-                    }]),
-                    PoSConfig {
-                        validator: pos_consensus.validator,
-                        signature: pos_consensus.signature,
-                        ..Default::default()
-                    },
-                )
-                .unwrap(),
+        let block = pos_consensus
+            .generate_block(
+                &pos_chain.get_last_block::<_, PoS>().unwrap(),
+                Transactions(vec![PoSTransaction {
+                    tx_type: TransactionType::Stake { amount: 50 },
+                    ..Default::default()
+                }]),
             )
             .unwrap();
+        pos_chain.add_block(block).unwrap();
         assert_eq!(pos_chain.get_height().unwrap(), 1);
 
+        let block = pos_consensus
+            .generate_block(
+                &pos_chain.get_last_block::<_, PoS>().unwrap(),
+                Transactions(vec![PoSTransaction {
+                    tx_type: TransactionType::Stake { amount: 20 },
+                    ..Default::default()
+                }]),
+            )
+            .unwrap();
+        pos_chain.add_block(block).unwrap();
+
+        let block = pos_consensus
+            .generate_block(
+                &pos_chain.get_last_block::<_, PoS>().unwrap(),
+                Transactions(vec![PoSTransaction {
+                    tx_type: TransactionType::Transfer {
+                        to: "Alice".into(),
+                        amount: 20,
+                    },
+                    ..Default::default()
+                }]),
+            )
+            .unwrap();
+        pos_chain.add_block(block).unwrap();
+
+        let block = pos_consensus
+            .generate_block(
+                &pos_chain.get_last_block::<_, PoS>().unwrap(),
+                Transactions(vec![PoSTransaction {
+                    tx_type: TransactionType::Stake { amount: 50 },
+                    ..Default::default()
+                }]),
+            )
+            .unwrap();
+        pos_chain.add_block(block).unwrap();
+
         println!("\n=========================== PoS Blockchain: =============================");
-        for i in 1..pos_chain.get_height().unwrap() {
+        for i in 0..pos_chain.get_height().unwrap() {
             let block: Block<PoSTransaction, PoS> = pos_chain.get_block(i).unwrap();
             println!("\nBlock {}: {:?}", i, block);
         }

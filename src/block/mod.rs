@@ -83,7 +83,7 @@ impl<T: Transaction, H: Proof> Block<T, H> {
     pub fn validate(&self, prev: &Block<T, H>) -> bool {
         let prev_valid = self.header.prev_hash == prev.header.hash();
         debug!("prev_valid: {}", prev_valid);
-        let time_valid = self.header.timestamp > prev.header.timestamp;
+        let time_valid = self.header.timestamp >= prev.header.timestamp;
         debug!("time_valid: {}", time_valid);
         let merkle_valid = {
             let Some(calc) = self.merkle_root() else {
