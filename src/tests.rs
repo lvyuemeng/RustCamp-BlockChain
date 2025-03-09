@@ -1,16 +1,15 @@
 #[cfg(test)]
 mod tests {
-    use std::{default, env::temp_dir, thread, time::Duration};
+    use std::{env::temp_dir, thread, time::Duration};
 
-    use chrono::Utc;
     use ed25519_dalek::{
-        SECRET_KEY_LENGTH, SecretKey, Signature, Signer, SigningKey, Verifier, VerifyingKey,
+        SECRET_KEY_LENGTH, SigningKey, VerifyingKey,
     };
     use serde::{Deserialize, Serialize};
 
     use crate::{
         block::{
-            Block, BlockHeader, Consensus, Transaction, Transactions,
+            Block, Consensus, Transaction, Transactions,
             pos::{PoS, PoSTransaction, TransactionType},
             pow::PoW,
         },
@@ -114,12 +113,12 @@ mod tests {
         let mut pos_chain = test_db::<PoSTransaction, PoS>();
         println!(
             "Genesis Block: {:?}",
-            pos_chain.get_block::<PoSTransaction, PoS>(0)
+            pos_chain.get_block::<PoSTransaction>(0)
         );
 
         let block = pos_consensus
             .generate_block(
-                &pos_chain.get_last_block::<_, PoS>().unwrap(),
+                &pos_chain.get_last_block::<PoSTransaction>().unwrap(),
                 Transactions(vec![PoSTransaction {
                     tx_type: TransactionType::Stake { amount: 50 },
                     ..Default::default()
@@ -131,7 +130,7 @@ mod tests {
 
         let block = pos_consensus
             .generate_block(
-                &pos_chain.get_last_block::<_, PoS>().unwrap(),
+                &pos_chain.get_last_block().unwrap(),
                 Transactions(vec![PoSTransaction {
                     tx_type: TransactionType::Stake { amount: 20 },
                     ..Default::default()
@@ -142,7 +141,7 @@ mod tests {
 
         let block = pos_consensus
             .generate_block(
-                &pos_chain.get_last_block::<_, PoS>().unwrap(),
+                &pos_chain.get_last_block().unwrap(),
                 Transactions(vec![PoSTransaction {
                     tx_type: TransactionType::Transfer {
                         to: "Alice".into(),
@@ -156,7 +155,7 @@ mod tests {
 
         let block = pos_consensus
             .generate_block(
-                &pos_chain.get_last_block::<_, PoS>().unwrap(),
+                &pos_chain.get_last_block().unwrap(),
                 Transactions(vec![PoSTransaction {
                     tx_type: TransactionType::Stake { amount: 50 },
                     ..Default::default()
@@ -235,7 +234,7 @@ mod tests {
                 )
                 .unwrap();
 
-            chain.add_block(block);
+            chain.add_block(block).unwrap();
             thread::sleep(Duration::from_secs(1));
         });
 
@@ -270,7 +269,7 @@ mod tests {
                 )
                 .unwrap();
 
-            chain.add_block(block);
+            chain.add_block(block).unwrap();
             thread::sleep(Duration::from_secs(1));
         });
 

@@ -86,7 +86,7 @@ impl<C: Consensus + for<'a> Deserialize<'a>> BlockChain<C> {
         T: Transaction + for<'a> Deserialize<'a>,
     >(
         &mut self,
-        block: Block<T, P>,
+        block: Block<T, C>,
     ) -> Result<()> {
         self.validate_new(&block)?;
         let mut batch = WriteBatch::default();
