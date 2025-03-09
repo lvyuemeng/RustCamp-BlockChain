@@ -4,12 +4,12 @@ pub mod pow;
 use std::path::Path;
 
 use anyhow::{Result, bail};
-use consensus::{Consensus, PoWConfig};
+use consensus::ConsensusData;
 use rocksdb::{DB, Options, WriteBatch};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 use crate::{
-    block::{Block, DummyTransaction, Proof, Transaction},
+    block::{Block, Consensus, Transaction},
     hash::Hashable,
 };
 
@@ -19,7 +19,7 @@ pub mod blockchain_control {
     pub const DEFAULT_DIFFICULTY: u32 = 0x1f00_ffff;
 }
 
-struct DbKeys;
+pub struct DbKeys;
 
 impl DbKeys {
     pub const LAST_HASH: &'static [u8] = b"last_hash";
@@ -39,13 +39,13 @@ impl DbKeys {
     }
 }
 
-pub struct BlockChain<C> {
+pub struct BlockChain<C:Consensus> {
     db: DB,
-    cs: Consensus<C>,
+    cs: ConsensusData<C>,
 }
 
-impl<C: Serialize + for<'a> Deserialize<'a> + Default> BlockChain<C> {
-    pub fn new<T: Transaction + Default, P: Proof>(path: impl AsRef<Path>) -> Result<Self> {
+impl<C: Consensus + for<'a>Deserialize<'a>> BlockChain<C> {
+    pub fn new<T: Transaction + Default>(path: impl AsRef<Path>) -> Result<Self> {
         let mut opts = Options::default();
         opts.create_if_missing(true);
         opts.set_compression_type(rocksdb::DBCompressionType::Zstd);
@@ -55,33 +55,33 @@ impl<C: Serialize + for<'a> Deserialize<'a> + Default> BlockChain<C> {
         let db = DB::open(&opts, path)?;
 
         let cur_state = match db.get(DbKeys::CUR_STATE)? {
-            Some(state) => bincode::deserialize(&state)?,
+            Some(state) => bincode::serde::decode_from_slice(&state, bincode::config::standard())?.0,
             None => C::default(),
         };
 
         if db.get(DbKeys::height_key(0))?.is_none() {
             log::info!("No last hash, Creating genesis block");
-            let genesis: Block<T, P> = Block::<T, P>::genesis();
+            let genesis: Block<T, C> = Block::<T, C>::genesis();
             let hash = genesis.header.hash();
 
             let mut batch = WriteBatch::default();
-            batch.put(DbKeys::block_key(&hash), bincode::serialize(&genesis)?);
+            batch.put(DbKeys::block_key(&hash), bincode::serde::encode_to_vec(&genesis, bincode::config::standard())?);
             batch.put(DbKeys::LAST_HASH, &hash);
             batch.put(DbKeys::height_key(0), &hash);
             batch.put(DbKeys::CUR_HEIGHT, &0u64.to_le_bytes());
-            batch.put(DbKeys::CUR_STATE, bincode::serialize(&cur_state)?);
+            batch.put(DbKeys::CUR_STATE, bincode::serde::encode_to_vec(&cur_state,bincode::config::standard())?);
             db.write(batch)?;
         }
 
         Ok(Self {
             db,
-            cs: Consensus::new(cur_state),
+            cs: ConsensusData::new(cur_state),
         })
     }
 
     pub fn add_block<
         T: Transaction + for<'a> Deserialize<'a>,
-        P: Proof + for<'a> Deserialize<'a>,
+        P: Consensus + for<'a> Deserialize<'a>,
     >(
         &self,
         block: Block<T, P>,
@@ -90,7 +90,7 @@ impl<C: Serialize + for<'a> Deserialize<'a> + Default> BlockChain<C> {
         let mut batch = WriteBatch::default();
         let block_hash = block.header.hash();
 
-        batch.put(DbKeys::block_key(&block_hash), bincode::serialize(&block)?);
+        batch.put(DbKeys::block_key(&block_hash), bincode::serde::encode_to_vec(&block, bincode::config::standard())?);
         batch.put(DbKeys::LAST_HASH, &block_hash);
 
         let new_height = self.get_height()? + 1;
@@ -103,7 +103,7 @@ impl<C: Serialize + for<'a> Deserialize<'a> + Default> BlockChain<C> {
 
     fn validate_new<
         T: Transaction + for<'a> Deserialize<'a>,
-        P: Proof + for<'a> Deserialize<'a>,
+        P: Consensus + for<'a> Deserialize<'a>,
     >(
         &self,
         block: &Block<T, P>,
@@ -117,7 +117,7 @@ impl<C: Serialize + for<'a> Deserialize<'a> + Default> BlockChain<C> {
 
     pub fn get_block<
         T: Transaction + for<'a> Deserialize<'a>,
-        P: Proof + for<'a> Deserialize<'a>,
+        P: Consensus + for<'a> Deserialize<'a>,
     >(
         &self,
         height: u64,
@@ -130,12 +130,12 @@ impl<C: Serialize + for<'a> Deserialize<'a> + Default> BlockChain<C> {
             .db
             .get(DbKeys::block_key(&block_hash))?
             .ok_or_else(|| anyhow::anyhow!("Block not found for given hash!"))?;
-        Ok(bincode::deserialize(&block_raw)?)
+        Ok(bincode::serde::decode_from_slice(&block_raw, bincode::config::standard())?.0)
     }
 
     pub fn get_last_block<
         T: Transaction + for<'a> Deserialize<'a>,
-        P: Proof + for<'a> Deserialize<'a>,
+        P: Consensus + for<'a> Deserialize<'a>,
     >(
         &self,
     ) -> Result<Block<T, P>> {

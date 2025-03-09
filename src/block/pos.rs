@@ -1,29 +1,31 @@
-use std::{collections::HashMap, default};
+use std::{collections::HashMap, default, fmt::Display};
 
-use anyhow::Result;
+use anyhow::{Result, bail};
+use bincode::{config::Configuration, Encode};
+use chrono::Utc;
 use ed25519_dalek::{
-    PUBLIC_KEY_LENGTH, SecretKey, Signature, Signer, SigningKey, Verifier, VerifyingKey,
+    SecretKey, Signature, Signer, SigningKey, Verifier, VerifyingKey, PUBLIC_KEY_LENGTH, SIGNATURE_LENGTH
 };
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::{block::Transaction, chain::consensus::PoSConfig, hash::Hashable};
+use crate::{block::Transaction, hash::Hashable};
 
-use super::{Block, Proof, Transactions};
+use super::{Block, BlockHeader, Consensus, Transactions};
 
 pub trait TransactionSign: Transaction {
     fn signer(&self) -> &str;
     fn signature(&self) -> &[u8];
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize,Encode)]
 pub enum TransactionType {
     Transfer { to: String, amount: u64 },
     Stake { amount: u64 },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize,Encode)]
 pub struct PoSTransaction {
     pub tx_type: TransactionType,
     pub signer: String,
@@ -48,7 +50,8 @@ impl Default for PoSTransaction {
 impl Hashable for PoSTransaction {
     fn hash(&self) -> [u8; 32] {
         let mut hasher = Sha256::new();
-        hasher.update(bincode::serialize(self).unwrap());
+        let val = bincode::encode_to_vec::<PoSTransaction,_>(self.clone(), bincode::config::standard()).unwrap();
+        hasher.update(val);
         hasher.finalize().into()
     }
 }
@@ -67,73 +70,87 @@ impl TransactionSign for PoSTransaction {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PoS {
-    validator: Vec<u8>,
     #[serde(skip)]
-    signature: Vec<u8>,
+    pub min_stake_amount: u64,
     #[serde(skip)]
-    stakes: HashMap<Vec<u8>, u64>,
+    pub stake_lock_period: u64, // pledge blocks
     #[serde(skip)]
-    validator_keys: HashMap<Vec<u8>, SecretKey>,
+    pub annual_interest_rate: f64,
+    #[serde(skip)]
+    pub validator_count: usize,
+    #[serde(skip)]
+    pub epoch_length: u64,
+    #[serde(skip)]
+    pub security_deposit: u64,
+
+    pub cur_validators: HashMap<VerifyingKey, u64>,
+    // Insecure! For demonstration only
+    #[serde(skip)]
+    pub validator_keys: HashMap<VerifyingKey, SecretKey>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PoSData {
+    pub validator_key: VerifyingKey,
+    pub signature: Signature,
+}
+
+impl Display for PoSData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "PoS\n validator: {:?}\n signature: {:?}",
+            self.validator_key,
+            self.signature,
+        )
+    }
 }
 
 impl Hashable for PoS {
     fn hash(&self) -> [u8; 32] {
         let mut hasher = Sha256::new();
-        hasher.update(bincode::serialize(self).unwrap());
+        let val = bincode::serde::encode_to_vec(self.clone(), bincode::config::standard()).unwrap();
+        hasher.update(val);
         hasher.finalize().into()
     }
 }
 
-impl PoS {
-    pub fn generate_block(
-        &self,
-        prev_block: &Block<PoSTransaction, PoS>,
-        txs: Transactions<PoSTransaction>,
-    ) -> Result<Block<PoSTransaction, PoS>> {
-        let validator_pubkey = self.select_validator().expect("No validators available");
-        let secret_key = self.validator_keys.get(&validator_pubkey).unwrap().clone();
-
-        let mut block = Block::new(
-            prev_block,
-            txs,
-            PoSConfig {
-                validator: validator_pubkey.clone(),
-                ..Default::default()
-            },
-        )?;
-
-        let hash = block.header.hash();
-
-        let signature = SigningKey::from_bytes(&secret_key).sign(&hash);
-        block.set_proof(PoS {
-            validator: validator_pubkey,
-            signature: signature.to_bytes().to_vec(),
-            stakes: self.stakes.clone(),
-            validator_keys: self.validator_keys.clone(),
-        });
-
-        Ok(block)
+impl Default for PoS {
+    fn default() -> Self {
+        Self {
+            min_stake_amount: 1000,
+            stake_lock_period: 10000,
+            annual_interest_rate: 0.1,
+            validator_count: 5,
+            epoch_length: 100,
+            security_deposit: 100,
+            cur_validators: HashMap::new(),
+            validator_keys: HashMap::new(),
+        }
     }
+}
 
+impl PoS {
     pub fn add_validator(&mut self, secret_key: SecretKey, stake: u64) {
         let public_key = SigningKey::from_bytes(&secret_key).verifying_key();
-        self.stakes.insert(public_key.to_bytes().to_vec(), stake);
+
+        self.cur_validators.insert(public_key, stake);
         self.validator_keys
-            .insert(public_key.to_bytes().to_vec(), secret_key);
+            .insert(public_key, secret_key);
     }
 
-    fn select_validator(&self) -> Option<Vec<u8>> {
-        let total_stake: u64 = self.stakes.values().sum();
+    fn select_validator(&self) -> Option<VerifyingKey> {
+        let total_stake: u64 = self.cur_validators.values().sum();
         if total_stake == 0 {
             return None;
         }
 
-        let mut rng = rand::thread_rng();
-        let mut random = rng.gen_range(0..total_stake);
+        let mut rng = rand::rng();
+        let mut random = rng.random_range(0..total_stake);
 
-        for (pub_key, &stake) in &self.stakes {
+        for (pub_key, &stake) in &self.cur_validators {
             if random < stake {
-                return Some(pub_key.clone());
+                return Some(*pub_key);
             }
             random -= stake;
         }
@@ -142,34 +159,62 @@ impl PoS {
     }
 }
 
-impl Proof for PoS {
-    type Config = PoSConfig;
+impl Consensus for PoS {
+    type Data = PoSData;
+    
+    fn validate<T: Transaction>(&self, block: &Block<T, Self>) -> bool {
+        let pub_key = block.header.data.validator_key.clone();
+        let signature = block.header.data.signature.clone();
 
-    fn validate(&self, _prev: &Self, header_hash: &[u8]) -> bool {
-        let mut key = [0u8; PUBLIC_KEY_LENGTH];
-        key.clone_from_slice(&self.validator);
-        let pub_key = VerifyingKey::from_bytes(&key).expect("invalid public key");
-        let signature = Signature::from_slice(&self.signature).expect("invalid signature");
+        // Check validator has sufficient stake in previous state
+        let has_stake = &self.cur_validators
+            .get(&pub_key)
+            .map_or(false, |&stake| stake >= self.min_stake_amount);
 
-        pub_key.verify(header_hash, &signature).is_ok() && self.stakes.contains_key(&self.validator)
+        pub_key.verify(&block.header.hash(), &signature).is_ok() && *has_stake
     }
 
-    fn genesis_config() -> Self {
-        Self {
-            validator: vec![],
-            signature: vec![],
-            stakes: HashMap::new(),
-            validator_keys: HashMap::new(),
-        }
-    }
+    fn generate_block<T: Transaction>(
+            &mut self,
+            block: &Block<T, Self>,
+            txs: Transactions<T>,
+        ) -> Result<Block<T, Self>> {
+        let Some(validator_pubkey )= self.select_validator() else {
+            bail!("No validator selected");
+        };
+        let Some(secret_key) = self.validator_keys.get(&validator_pubkey).cloned() else {
+            bail!("No secret key found");
+        };
 
-    fn new(ctx: Self::Config) -> Self {
-        Self {
-            validator: ctx.validator,
-            signature: ctx.signature,
-            stakes: HashMap::new(),
-            validator_keys: HashMap::new(),
-        }
+        let hash = block.header.hash();
+        let signature = SigningKey::from_bytes(&secret_key).sign(&hash);
+        
+        let Some(merkle_root) = txs.merkle_root() else {
+            bail!("No merkle root found");
+        };
+
+        let block = Block {
+            header: BlockHeader {
+                prev_hash: block.header.hash().to_vec(),
+                merkle_root,
+                timestamp: Utc::now().timestamp(),
+                data: PoSData {
+                    validator_key: validator_pubkey,
+                    signature,
+                },
+            },
+            txs,
+        };
+            
+
+        Ok(block)
+    }
+    
+    fn genesis_data() -> Self::Data {
+        PoSData {
+            validator_key: VerifyingKey::from_bytes(&[0; 32]).unwrap(),
+            signature: Signature::from_bytes(&[0; 64]),
+        }   
     }
 }
 

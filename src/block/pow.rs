@@ -1,52 +1,97 @@
+use std::fmt::Display;
+
 use chrono::Utc;
 use num_bigint::BigUint;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
+use anyhow::{Result,bail};
 
 use crate::{
-    block::{Block, BlockHeader, Proof, Transaction},
+    block::{Block, BlockHeader, Consensus, Transaction},
     chain::blockchain_control,
     hash::{Hashable, bits_to_target},
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PoW {
+    #[serde(skip)]
+    pub target_timespan: u64,
+    #[serde(skip)]
+    pub difficulty_adjust_interval: u64,
+    #[serde(skip)]
+    pub initial_difficulty: u32,
+    #[serde(skip)]
+    pub allow_mining_reward: bool,
+    #[serde(skip)]
+    pub block_reward: u64,
+    // cur difficulty
+    pub cur_bits: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PoWData {
     pub bits: u32,
     pub nonce: u64,
 }
 
-impl Hashable for PoW {
-    fn hash(&self) -> [u8; 32] {
-        let mut hasher = Sha256::new();
-        hasher.update(self.bits.to_le_bytes());
-        hasher.update(self.nonce.to_le_bytes());
-        hasher.finalize().into()
+impl Display for PoWData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "PoW\n bits: {}\n nonce: {}", self.bits, self.nonce)
     }
 }
 
-impl Proof for PoW {
-    type Config = u32;
-    fn validate(&self, _prev: &Self, header_hash: &[u8]) -> bool {
-        let target = bits_to_target(self.bits);
-        BigUint::from_bytes_be(header_hash) <= target
-    }
 
-    fn genesis_config() -> Self {
+impl Default for PoW {
+    fn default() -> Self {
         Self {
+            target_timespan: blockchain_control::TARGET_TIME_SPAN,
+            difficulty_adjust_interval: blockchain_control::DIFFICULTY_ADJUST_INTERVAL,
+            initial_difficulty: blockchain_control::DEFAULT_DIFFICULTY,
+            allow_mining_reward: true,
+            block_reward: 50,
+            cur_bits: blockchain_control::DEFAULT_DIFFICULTY,
+        }
+    }
+}
+
+impl Consensus for PoW {
+    type Data = PoWData;
+    fn validate<T:Transaction>(&self, block:&Block<T,Self>) -> bool {
+        let target = bits_to_target(self.cur_bits);
+        BigUint::from_bytes_be(&block.header.hash()) <= target
+    }
+    
+    fn generate_block<T:Transaction>(&mut self,prev:&Block<T,Self>,txs:super::Transactions<T>) -> Result<Block<T,Self>> {
+        let merkle_root = match txs.merkle_root() {
+            Some(root) => root,
+            None => bail!("No merkle root found!"),
+        };
+
+        let data = PoWData {
+            bits: self.cur_bits,
+            nonce: 0,
+        };
+        let block = Block {
+            header: BlockHeader {
+                prev_hash: prev.header.hash().to_vec(),
+                merkle_root,
+                timestamp: Utc::now().timestamp(),
+                data,
+            },
+            txs,
+        };
+        Ok(block)
+    }
+    
+    fn genesis_data() -> Self::Data {
+        PoWData {
             bits: blockchain_control::DEFAULT_DIFFICULTY,
             nonce: 0,
         }
     }
-
-    fn new(ctx: Self::Config) -> Self {
-        Self {
-            bits: ctx,
-            nonce: 0,
-        }
-    }
+    
 }
 
-impl PoW {
+impl PoWData {
     pub fn target(&self) -> BigUint {
         bits_to_target(self.bits)
     }
@@ -55,10 +100,10 @@ impl PoW {
         BigUint::from_bytes_be(hash) <= self.target()
     }
 
-    pub fn run(&self, mut bh: BlockHeader<PoW>) -> BlockHeader<PoW> {
+    pub fn run(&self, mut bh: BlockHeader<PoWData>) -> BlockHeader<PoWData> {
         let mut nonce = 0u64;
         loop {
-            bh.proof.nonce = nonce;
+            bh.data.nonce = nonce;
             let hash = bh.hash();
 
             if self.is_valid(&hash) {
@@ -78,6 +123,6 @@ impl PoW {
 
 impl<T: Transaction + Serialize> Block<T, PoW> {
     pub fn mine(&mut self) {
-        self.header = self.header.proof.run(self.header.clone())
+        self.header = self.header.data.run(self.header.clone())
     }
 }
