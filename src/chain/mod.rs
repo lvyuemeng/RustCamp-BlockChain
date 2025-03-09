@@ -44,7 +44,7 @@ pub struct BlockChain<C> {
     cs: Consensus<C>,
 }
 
-impl<C: Serialize + for<'a> Deserialize<'a> + Default> BlockChain<C> {
+impl<C> BlockChain<C> where C: Serialize + for<'a> Deserialize<'a> + Default {
     pub fn new<P: Proof>(path: impl AsRef<Path>) -> Result<Self> {
         let mut opts = Options::default();
         opts.create_if_missing(true);
