@@ -1,9 +1,9 @@
 use std::fmt::Display;
 
+use anyhow::{Result, bail};
 use chrono::Utc;
 use num_bigint::BigUint;
 use serde::{Deserialize, Serialize};
-use anyhow::{Result,bail};
 
 use crate::{
     block::{Block, BlockHeader, Consensus, Transaction},
@@ -34,7 +34,6 @@ impl Display for PoWData {
     }
 }
 
-
 impl Default for PoW {
     fn default() -> Self {
         Self {
@@ -50,40 +49,62 @@ impl Default for PoW {
 
 impl Consensus for PoW {
     type Data = PoWData;
-    fn validate<T:Transaction>(&self, block:&Block<T,Self>) -> bool {
+    fn validate<T: Transaction>(&self, block: &Block<T, Self>) -> bool {
         let target = bits_to_target(self.cur_bits);
         BigUint::from_bytes_be(&block.header.hash()) <= target
     }
-    
-    fn generate_block<T:Transaction>(&mut self,prev:&Block<T,Self>,txs:super::Transactions<T>) -> Result<Block<T,Self>> {
+
+    fn generate_block<T: Transaction>(
+        &self,
+        prev: &Block<T, Self>,
+        txs: super::Transactions<T>,
+    ) -> Result<Block<T, Self>> {
         let merkle_root = match txs.merkle_root() {
             Some(root) => root,
             None => bail!("No merkle root found!"),
         };
 
-        let data = PoWData {
-            bits: self.cur_bits,
-            nonce: 0,
-        };
-        let block = Block {
+        let mut block = Block {
             header: BlockHeader {
                 prev_hash: prev.header.hash().to_vec(),
                 merkle_root,
                 timestamp: Utc::now().timestamp(),
-                data,
+                data: PoWData {
+                    bits: self.cur_bits,
+                    nonce: 0,
+                },
             },
             txs,
         };
+
+        let bh: &mut BlockHeader<PoWData> = &mut block.header;
+        let mut nonce = 0u64;
+        loop {
+            bh.data.nonce = nonce;
+            let hash = bh.hash();
+
+            if bh.data.is_valid(&hash) {
+                log::debug!("Found block with nonce {}", nonce);
+                break;
+            }
+
+            nonce = nonce.wrapping_add(1);
+
+            if nonce % 1_000_000 == 0 {
+                bh.timestamp = Utc::now().timestamp();
+                log::debug!("Retrying with timestamp {}", bh.timestamp);
+            }
+        }
+
         Ok(block)
     }
-    
+
     fn genesis_data() -> Self::Data {
         PoWData {
             bits: blockchain_control::DEFAULT_DIFFICULTY,
             nonce: 0,
         }
     }
-    
 }
 
 impl PoWData {

@@ -3,7 +3,6 @@ pub mod pow;
 use std::fmt::{self, Display, Formatter};
 
 use anyhow::Result;
-use bincode::Encode;
 use log::debug;
 use rs_merkle::{MerkleTree, algorithms::Sha256 as MerkleSha256};
 use serde::{Deserialize, Serialize};
@@ -17,7 +16,7 @@ pub struct Block<T: Transaction, H: Consensus> {
     txs: Transactions<T>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize,Encode)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BlockHeader<D> {
     pub prev_hash: Vec<u8>,
     pub merkle_root: Vec<u8>,
@@ -30,11 +29,10 @@ pub trait Consensus: Serialize + Clone + Default {
     fn validate<T: Transaction>(&self, block: &Block<T, Self>) -> bool;
     fn genesis_data() -> Self::Data;
     fn generate_block<T: Transaction>(
-        &mut self,
+        &self,
         prev: &Block<T, Self>,
         txs: Transactions<T>,
     ) -> Result<Block<T, Self>>;
-    
 }
 
 pub trait Transaction: Hashable + Serialize {
@@ -52,7 +50,7 @@ impl Hashable for DummyTransaction {
         hasher.update(b"Dummy");
         hasher.finalize().into()
     }
-    
+
     fn try_hash(&self) -> Option<[u8; 32]> {
         Some(self.hash())
     }
@@ -120,7 +118,7 @@ impl<D: Serialize + Clone> Hashable for BlockHeader<D> {
         hasher.update(self.prev_hash.clone());
         hasher.update(self.merkle_root.clone());
         hasher.update(self.timestamp.to_le_bytes());
-        let val = bincode::serde::encode_to_vec(self.data.clone(), bincode::config::standard()).unwrap();
+        let val = bincode::serialize(&self.data).unwrap();
         hasher.update(val);
         let result = hasher.finalize();
 
@@ -166,7 +164,7 @@ impl<T: Transaction + Default> Hashable for Transactions<T> {
             }
         }
     }
-    
+
     fn try_hash(&self) -> Option<[u8; 32]> {
         self.merkle_root().and_then(|x| x.try_into().ok())
     }

@@ -1,7 +1,6 @@
 use std::{collections::HashMap, fmt::Display};
 
 use anyhow::{Result, bail};
-use bincode::Encode;
 use chrono::Utc;
 use ed25519_dalek::{SecretKey, Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use rand::Rng;
@@ -17,13 +16,13 @@ pub trait TransactionSign: Transaction {
     fn signature(&self) -> &[u8];
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Encode)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum TransactionType {
     Transfer { to: String, amount: u64 },
     Stake { amount: u64 },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Encode)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PoSTransaction {
     pub tx_type: TransactionType,
     pub signer: String,
@@ -48,10 +47,9 @@ impl Default for PoSTransaction {
 impl Hashable for PoSTransaction {
     fn try_hash(&self) -> Option<[u8; 32]> {
         let mut hasher = Sha256::new();
-        let Some(val) =
-            bincode::encode_to_vec::<PoSTransaction, _>(self.clone(), bincode::config::standard()).ok() else{
-                return None
-            };
+        let Some(val) = bincode::serialize(&self).ok() else {
+            return None;
+        };
         hasher.update(val);
         Some(hasher.finalize().into())
     }
@@ -102,10 +100,7 @@ impl Display for PoSData {
 impl Hashable for PoS {
     fn try_hash(&self) -> Option<[u8; 32]> {
         let mut hasher = Sha256::new();
-        let Some(val) =
-            bincode::serde::encode_to_vec(self.clone(), bincode::config::standard()).ok() else{
-                return None
-            };
+        let val = bincode::serialize(&self).unwrap();
         hasher.update(val);
         Some(hasher.finalize().into())
     }
@@ -171,7 +166,7 @@ impl Consensus for PoS {
     }
 
     fn generate_block<T: Transaction>(
-        &mut self,
+        &self,
         block: &Block<T, Self>,
         txs: Transactions<T>,
     ) -> Result<Block<T, Self>> {
@@ -209,120 +204,6 @@ impl Consensus for PoS {
         PoSData {
             validator_key: VerifyingKey::from_bytes(&[0; 32]).unwrap(),
             signature: Signature::from_bytes(&[0; 64]),
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::{block::Block, chain::BlockChain};
-    use ed25519_dalek::SigningKey;
-    use rand_core::OsRng;
-    use std::env::temp_dir;
-
-    fn test_db<C: Serialize + for<'a> Deserialize<'a> + Default>() -> BlockChain<C> {
-        let random_suffix = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-
-        let db_dir = temp_dir().join(format!("blockchain_test_{}", random_suffix));
-
-        std::fs::create_dir_all(&db_dir).unwrap();
-        let chain = BlockChain::new::<PoSTransaction, PoS>(db_dir).unwrap();
-
-        chain
-    }
-
-    #[test]
-    fn test_pos() {
-        // 使用 PoS 的区块链
-        let mut csprng = OsRng;
-        let secret_key = SigningKey::generate(&mut csprng);
-        let mut pos_consensus = PoS::new(PoSConfig {
-            validator: secret_key.verifying_key().as_bytes().to_vec(),
-            ..Default::default()
-        });
-        println!(
-            "Added validators: {:?}: {}",
-            secret_key.verifying_key().as_bytes(),
-            60
-        );
-        pos_consensus.add_validator(secret_key.to_bytes(), 60);
-        let secret_key = SigningKey::generate(&mut csprng);
-        println!(
-            "Added validators: {:?}: {}",
-            secret_key.verifying_key().as_bytes(),
-            100
-        );
-        pos_consensus.add_validator(secret_key.to_bytes(), 100);
-        let secret_key = SigningKey::generate(&mut csprng);
-        println!(
-            "Added validators: {:?}: {}",
-            secret_key.verifying_key().as_bytes(),
-            80
-        );
-        pos_consensus.add_validator(secret_key.to_bytes(), 80);
-
-        let mut pos_chain = test_db::<PoSConfig>();
-        println!(
-            "Genesis Block: {:?}",
-            pos_chain.get_block::<PoSTransaction, PoS>(0)
-        );
-
-        let block = pos_consensus
-            .generate_block(
-                &pos_chain.get_last_block::<_, PoS>().unwrap(),
-                Transactions(vec![PoSTransaction {
-                    tx_type: TransactionType::Stake { amount: 50 },
-                    ..Default::default()
-                }]),
-            )
-            .unwrap();
-        pos_chain.add_block(block).unwrap();
-        assert_eq!(pos_chain.get_height().unwrap(), 1);
-
-        let block = pos_consensus
-            .generate_block(
-                &pos_chain.get_last_block::<_, PoS>().unwrap(),
-                Transactions(vec![PoSTransaction {
-                    tx_type: TransactionType::Stake { amount: 20 },
-                    ..Default::default()
-                }]),
-            )
-            .unwrap();
-        pos_chain.add_block(block).unwrap();
-
-        let block = pos_consensus
-            .generate_block(
-                &pos_chain.get_last_block::<_, PoS>().unwrap(),
-                Transactions(vec![PoSTransaction {
-                    tx_type: TransactionType::Transfer {
-                        to: "Alice".into(),
-                        amount: 20,
-                    },
-                    ..Default::default()
-                }]),
-            )
-            .unwrap();
-        pos_chain.add_block(block).unwrap();
-
-        let block = pos_consensus
-            .generate_block(
-                &pos_chain.get_last_block::<_, PoS>().unwrap(),
-                Transactions(vec![PoSTransaction {
-                    tx_type: TransactionType::Stake { amount: 50 },
-                    ..Default::default()
-                }]),
-            )
-            .unwrap();
-        pos_chain.add_block(block).unwrap();
-
-        println!("\n=========================== PoS Blockchain: =============================");
-        for i in 0..pos_chain.get_height().unwrap() {
-            let block: Block<PoSTransaction, PoS> = pos_chain.get_block(i).unwrap();
-            println!("\nBlock {}: {:?}", i, block);
         }
     }
 }

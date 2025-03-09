@@ -7,7 +7,7 @@ use rocksdb::{DB, Options, WriteBatch};
 use serde::Deserialize;
 
 use crate::{
-    block::{Block, Consensus, Transaction},
+    block::{Block, Consensus, Transaction, Transactions},
     hash::Hashable,
 };
 
@@ -37,12 +37,12 @@ impl DbKeys {
     }
 }
 
-pub struct BlockChain<C:Consensus> {
+pub struct BlockChain<C: Consensus> {
     db: DB,
     cs: C,
 }
 
-impl<C: Consensus + for<'a>Deserialize<'a>> BlockChain<C> {
+impl<C: Consensus + for<'a> Deserialize<'a>> BlockChain<C> {
     pub fn new<T: Transaction + Default>(path: impl AsRef<Path>) -> Result<Self> {
         let mut opts = Options::default();
         opts.create_if_missing(true);
@@ -53,7 +53,7 @@ impl<C: Consensus + for<'a>Deserialize<'a>> BlockChain<C> {
         let db = DB::open(&opts, path)?;
 
         let cur_state = match db.get(DbKeys::CUR_STATE)? {
-            Some(state) => bincode::serde::decode_from_slice(&state, bincode::config::standard())?.0,
+            Some(state) => bincode::deserialize(&state)?,
             None => C::default(),
         };
 
@@ -63,31 +63,36 @@ impl<C: Consensus + for<'a>Deserialize<'a>> BlockChain<C> {
             let hash = genesis.header.hash();
             
             let mut batch = WriteBatch::default();
-            batch.put(DbKeys::block_key(&hash), bincode::serde::encode_to_vec(&genesis, bincode::config::standard())?);
+            batch.put(DbKeys::block_key(&hash), bincode::serialize(&genesis)?);
             batch.put(DbKeys::LAST_HASH, &hash);
             batch.put(DbKeys::height_key(0), &hash);
             batch.put(DbKeys::CUR_HEIGHT, &0u64.to_le_bytes());
-            batch.put(DbKeys::CUR_STATE, bincode::serde::encode_to_vec(&cur_state,bincode::config::standard())?);
+            batch.put(DbKeys::CUR_STATE, bincode::serialize(&cur_state)?);
             db.write(batch)?;
         }
 
-        Ok(Self {
-            db,
-            cs: cur_state,
-        })
+        Ok(Self { db, cs: cur_state })
+    }
+
+    pub fn get_consensus(&self) -> &C {
+        &self.cs
+    }
+
+    pub fn get_consensus_mut(&mut self) -> &mut C {
+        &mut self.cs
     }
 
     pub fn add_block<
         T: Transaction + for<'a> Deserialize<'a>,
     >(
-        &self,
-        block: Block<T, C>,
+        &mut self,
+        block: Block<T, P>,
     ) -> Result<()> {
         self.validate_new(&block)?;
         let mut batch = WriteBatch::default();
         let block_hash = block.header.hash();
 
-        batch.put(DbKeys::block_key(&block_hash), bincode::serde::encode_to_vec(&block, bincode::config::standard())?);
+        batch.put(DbKeys::block_key(&block_hash), bincode::serialize(&block)?);
         batch.put(DbKeys::LAST_HASH, &block_hash);
 
         let new_height = self.get_height()? + 1;
@@ -125,7 +130,7 @@ impl<C: Consensus + for<'a>Deserialize<'a>> BlockChain<C> {
             .db
             .get(DbKeys::block_key(&block_hash))?
             .ok_or_else(|| anyhow::anyhow!("Block not found for given hash!"))?;
-        Ok(bincode::serde::decode_from_slice(&block_raw, bincode::config::standard())?.0)
+        Ok(bincode::deserialize(&block_raw)?)
     }
 
     pub fn get_last_block<
@@ -144,26 +149,23 @@ impl<C: Consensus + for<'a>Deserialize<'a>> BlockChain<C> {
             .ok_or_else(|| anyhow::anyhow!("Blockchain height not found"))
     }
 
-    fn put_state(&self, state:&C) -> Result<()> {
-        self.db
-            .put(
-                DbKeys::CUR_STATE,
-                bincode::serde::encode_to_vec(state, bincode::config::standard())?,
-            )
+    pub fn put_state(&self, chain: &BlockChain<C>) -> Result<()> {
+        chain
+            .db
+            .put(DbKeys::CUR_STATE, bincode::serialize(&self.cs)?)
             .map_err(|e| anyhow::anyhow!(e))
     }
 
-    fn get_state(&self) -> Result<C> {
+    pub fn get_state(&self) -> Result<C::Data> {
         let state = self.db.get(DbKeys::CUR_STATE)?;
         match state {
             Some(s) => {
-                let s = bincode::serde::decode_from_slice(&s, bincode::config::standard())
-                    .map_err(|e| anyhow::anyhow!(e))?;
-                Ok(s.0)
+                let s = bincode::deserialize(&s).map_err(|e| anyhow::anyhow!(e))?;
+                Ok(s)
             }
             None => {
                 bail!("Can't found state for consensus!")
             }
         }
-    } 
+    }
 }
