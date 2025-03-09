@@ -1,7 +1,12 @@
 use num_bigint::BigUint;
 
 pub trait Hashable {
-    fn hash(&self) -> [u8; 32];
+    fn hash(&self) -> [u8; 32] {
+        self.try_hash().unwrap()
+    }
+    fn try_hash(&self) -> Option<[u8; 32]> {
+        None
+    }
 }
 
 const COEFF_MASK:u32 = 0x007f_ffff;

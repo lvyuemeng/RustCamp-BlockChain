@@ -46,13 +46,16 @@ impl Default for PoSTransaction {
 }
 
 impl Hashable for PoSTransaction {
-    fn hash(&self) -> [u8; 32] {
+    fn try_hash(&self) -> Option<[u8; 32]> {
         let mut hasher = Sha256::new();
-        let val =
+        let Some(val) =
             bincode::encode_to_vec::<PoSTransaction, _>(self.clone(), bincode::config::standard())
-                .unwrap();
+                .ok()
+        else {
+            return None;
+        };
         hasher.update(val);
-        hasher.finalize().into()
+        Some(hasher.finalize().into())
     }
 }
 
@@ -106,11 +109,11 @@ impl Display for PoSData {
 }
 
 impl Hashable for PoS {
-    fn hash(&self) -> [u8; 32] {
+    fn try_hash(&self) -> Option<[u8; 32]> {
         let mut hasher = Sha256::new();
         let val = bincode::serde::encode_to_vec(self.clone(), bincode::config::standard()).unwrap();
         hasher.update(val);
-        hasher.finalize().into()
+        Some(hasher.finalize().into())
     }
 }
 

@@ -1,11 +1,8 @@
-pub mod consensus;
 pub mod pow;
 
 use std::path::Path;
 
 use anyhow::{Result, bail};
-use consensus::ConsensusData;
-use rand::Rng;
 use rocksdb::{DB, Options, WriteBatch};
 use serde::Deserialize;
 
