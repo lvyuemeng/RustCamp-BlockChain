@@ -18,7 +18,7 @@ pub struct Block<T: Transaction, H: Consensus> {
     txs: Transactions<T>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize,Encode)]
+#[derive(Debug, Clone, Serialize, Deserialize, Encode)]
 pub struct BlockHeader<D> {
     pub prev_hash: Vec<u8>,
     pub merkle_root: Vec<u8>,
@@ -31,7 +31,7 @@ pub trait Consensus: Serialize + Clone + Default {
     fn validate<T: Transaction>(&self, block: &Block<T, Self>) -> bool;
     fn genesis_data() -> Self::Data;
     fn generate_block<T: Transaction>(
-        &mut self,
+        &self,
         prev: &Block<T, Self>,
         txs: Transactions<T>,
     ) -> Result<Block<T, Self>>;
@@ -115,7 +115,8 @@ impl<D: Serialize + Clone> Hashable for BlockHeader<D> {
         hasher.update(self.prev_hash.clone());
         hasher.update(self.merkle_root.clone());
         hasher.update(self.timestamp.to_le_bytes());
-        let val = bincode::serde::encode_to_vec(self.data.clone(), bincode::config::standard()).unwrap();
+        let val =
+            bincode::serde::encode_to_vec(self.data.clone(), bincode::config::standard()).unwrap();
         hasher.update(val);
         let result = hasher.finalize();
 
