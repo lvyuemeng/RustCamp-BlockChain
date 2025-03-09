@@ -1,11 +1,9 @@
-use std::{collections::HashMap, default, fmt::Display};
+use std::{collections::HashMap, fmt::Display};
 
 use anyhow::{Result, bail};
-use bincode::{config::Configuration, Encode};
+use bincode::Encode;
 use chrono::Utc;
-use ed25519_dalek::{
-    SecretKey, Signature, Signer, SigningKey, Verifier, VerifyingKey, PUBLIC_KEY_LENGTH, SIGNATURE_LENGTH
-};
+use ed25519_dalek::{SecretKey, Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -19,13 +17,13 @@ pub trait TransactionSign: Transaction {
     fn signature(&self) -> &[u8];
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize,Encode)]
+#[derive(Debug, Clone, Serialize, Deserialize, Encode)]
 pub enum TransactionType {
     Transfer { to: String, amount: u64 },
     Stake { amount: u64 },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize,Encode)]
+#[derive(Debug, Clone, Serialize, Deserialize, Encode)]
 pub struct PoSTransaction {
     pub tx_type: TransactionType,
     pub signer: String,
@@ -48,11 +46,14 @@ impl Default for PoSTransaction {
 }
 
 impl Hashable for PoSTransaction {
-    fn hash(&self) -> [u8; 32] {
+    fn try_hash(&self) -> Option<[u8; 32]> {
         let mut hasher = Sha256::new();
-        let val = bincode::encode_to_vec::<PoSTransaction,_>(self.clone(), bincode::config::standard()).unwrap();
+        let Some(val) =
+            bincode::encode_to_vec::<PoSTransaction, _>(self.clone(), bincode::config::standard()).ok() else{
+                return None
+            };
         hasher.update(val);
-        hasher.finalize().into()
+        Some(hasher.finalize().into())
     }
 }
 
@@ -100,18 +101,20 @@ impl Display for PoSData {
         write!(
             f,
             "PoS\n validator: {:?}\n signature: {:?}",
-            self.validator_key,
-            self.signature,
+            self.validator_key, self.signature,
         )
     }
 }
 
 impl Hashable for PoS {
-    fn hash(&self) -> [u8; 32] {
+    fn try_hash(&self) -> Option<[u8; 32]> {
         let mut hasher = Sha256::new();
-        let val = bincode::serde::encode_to_vec(self.clone(), bincode::config::standard()).unwrap();
+        let Some(val) =
+            bincode::serde::encode_to_vec(self.clone(), bincode::config::standard()).ok() else{
+                return None
+            };
         hasher.update(val);
-        hasher.finalize().into()
+        Some(hasher.finalize().into())
     }
 }
 
@@ -135,8 +138,7 @@ impl PoS {
         let public_key = SigningKey::from_bytes(&secret_key).verifying_key();
 
         self.cur_validators.insert(public_key, stake);
-        self.validator_keys
-            .insert(public_key, secret_key);
+        self.validator_keys.insert(public_key, secret_key);
     }
 
     fn select_validator(&self) -> Option<VerifyingKey> {
@@ -161,13 +163,14 @@ impl PoS {
 
 impl Consensus for PoS {
     type Data = PoSData;
-    
+
     fn validate<T: Transaction>(&self, block: &Block<T, Self>) -> bool {
         let pub_key = block.header.data.validator_key.clone();
         let signature = block.header.data.signature.clone();
 
         // Check validator has sufficient stake in previous state
-        let has_stake = &self.cur_validators
+        let has_stake = &self
+            .cur_validators
             .get(&pub_key)
             .map_or(false, |&stake| stake >= self.min_stake_amount);
 
@@ -175,11 +178,11 @@ impl Consensus for PoS {
     }
 
     fn generate_block<T: Transaction>(
-            &mut self,
-            block: &Block<T, Self>,
-            txs: Transactions<T>,
-        ) -> Result<Block<T, Self>> {
-        let Some(validator_pubkey )= self.select_validator() else {
+        &mut self,
+        block: &Block<T, Self>,
+        txs: Transactions<T>,
+    ) -> Result<Block<T, Self>> {
+        let Some(validator_pubkey) = self.select_validator() else {
             bail!("No validator selected");
         };
         let Some(secret_key) = self.validator_keys.get(&validator_pubkey).cloned() else {
@@ -188,7 +191,7 @@ impl Consensus for PoS {
 
         let hash = block.header.hash();
         let signature = SigningKey::from_bytes(&secret_key).sign(&hash);
-        
+
         let Some(merkle_root) = txs.merkle_root() else {
             bail!("No merkle root found");
         };
@@ -205,16 +208,15 @@ impl Consensus for PoS {
             },
             txs,
         };
-            
 
         Ok(block)
     }
-    
+
     fn genesis_data() -> Self::Data {
         PoSData {
             validator_key: VerifyingKey::from_bytes(&[0; 32]).unwrap(),
             signature: Signature::from_bytes(&[0; 64]),
-        }   
+        }
     }
 }
 

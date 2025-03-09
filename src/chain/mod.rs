@@ -1,10 +1,8 @@
-pub mod consensus;
 pub mod pow;
 
 use std::path::Path;
 
 use anyhow::{Result, bail};
-use consensus::ConsensusData;
 use rocksdb::{DB, Options, WriteBatch};
 use serde::Deserialize;
 
@@ -41,7 +39,7 @@ impl DbKeys {
 
 pub struct BlockChain<C:Consensus> {
     db: DB,
-    cs: ConsensusData<C>,
+    cs: C,
 }
 
 impl<C: Consensus + for<'a>Deserialize<'a>> BlockChain<C> {
@@ -75,7 +73,7 @@ impl<C: Consensus + for<'a>Deserialize<'a>> BlockChain<C> {
 
         Ok(Self {
             db,
-            cs: ConsensusData::new(cur_state),
+            cs: cur_state,
         })
     }
 
@@ -149,4 +147,27 @@ impl<C: Consensus + for<'a>Deserialize<'a>> BlockChain<C> {
             .or_else(|| Some(0))
             .ok_or_else(|| anyhow::anyhow!("Blockchain height not found"))
     }
+
+    fn put_state(&self, state:&C) -> Result<()> {
+        self.db
+            .put(
+                DbKeys::CUR_STATE,
+                bincode::serde::encode_to_vec(state, bincode::config::standard())?,
+            )
+            .map_err(|e| anyhow::anyhow!(e))
+    }
+
+    fn get_state(&self) -> Result<C> {
+        let state = self.db.get(DbKeys::CUR_STATE)?;
+        match state {
+            Some(s) => {
+                let s = bincode::serde::decode_from_slice(&s, bincode::config::standard())
+                    .map_err(|e| anyhow::anyhow!(e))?;
+                Ok(s.0)
+            }
+            None => {
+                bail!("Can't found state for consensus!")
+            }
+        }
+    } 
 }

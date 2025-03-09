@@ -2,9 +2,8 @@ pub mod pos;
 pub mod pow;
 use std::fmt::{self, Display, Formatter};
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 use bincode::Encode;
-use chrono::Utc;
 use log::debug;
 use rs_merkle::{MerkleTree, algorithms::Sha256 as MerkleSha256};
 use serde::{Deserialize, Serialize};
@@ -35,6 +34,7 @@ pub trait Consensus: Serialize + Clone + Default {
         prev: &Block<T, Self>,
         txs: Transactions<T>,
     ) -> Result<Block<T, Self>>;
+    
 }
 
 pub trait Transaction: Hashable + Serialize {
@@ -52,6 +52,10 @@ impl Hashable for DummyTransaction {
         hasher.update(b"Dummy");
         hasher.finalize().into()
     }
+    
+    fn try_hash(&self) -> Option<[u8; 32]> {
+        Some(self.hash())
+    }
 }
 
 impl Transaction for DummyTransaction {}
@@ -64,6 +68,7 @@ impl<T: Transaction, H: Consensus> Block<T, H> {
         self.txs.merkle_root()
     }
 
+    // Deprecated
     // pub fn new(prev: &Block<T, H>, txs: Transactions<T>, cfg: H::Data) -> Result<Block<T, H>> {
     //     let merkle_root = match txs.merkle_root() {
     //         Some(root) => root,
@@ -124,6 +129,10 @@ impl<D: Serialize + Clone> Hashable for BlockHeader<D> {
         let result = hasher.finalize();
         result.into()
     }
+
+    fn try_hash(&self) -> Option<[u8; 32]> {
+        Some(self.hash())
+    }
 }
 
 impl<D: Display> Display for BlockHeader<D> {
@@ -156,6 +165,10 @@ impl<T: Transaction + Default> Hashable for Transactions<T> {
                 txs.merkle_root().unwrap().try_into().unwrap()
             }
         }
+    }
+    
+    fn try_hash(&self) -> Option<[u8; 32]> {
+        self.merkle_root().and_then(|x| x.try_into().ok())
     }
 }
 
