@@ -61,7 +61,7 @@ impl<C: Consensus + for<'a>Deserialize<'a>> BlockChain<C> {
             log::info!("No last hash, Creating genesis block");
             let genesis: Block<T, C> = Block::<T, C>::genesis();
             let hash = genesis.header.hash();
-
+            
             let mut batch = WriteBatch::default();
             batch.put(DbKeys::block_key(&hash), bincode::serde::encode_to_vec(&genesis, bincode::config::standard())?);
             batch.put(DbKeys::LAST_HASH, &hash);
@@ -79,10 +79,9 @@ impl<C: Consensus + for<'a>Deserialize<'a>> BlockChain<C> {
 
     pub fn add_block<
         T: Transaction + for<'a> Deserialize<'a>,
-        P: Consensus + for<'a> Deserialize<'a>,
     >(
         &self,
-        block: Block<T, P>,
+        block: Block<T, C>,
     ) -> Result<()> {
         self.validate_new(&block)?;
         let mut batch = WriteBatch::default();
@@ -101,10 +100,9 @@ impl<C: Consensus + for<'a>Deserialize<'a>> BlockChain<C> {
 
     fn validate_new<
         T: Transaction + for<'a> Deserialize<'a>,
-        P: Consensus + for<'a> Deserialize<'a>,
     >(
         &self,
-        block: &Block<T, P>,
+        block: &Block<T, C>,
     ) -> Result<()> {
         if block.validate(&self.get_last_block()?) {
             Ok(())
@@ -115,11 +113,10 @@ impl<C: Consensus + for<'a>Deserialize<'a>> BlockChain<C> {
 
     pub fn get_block<
         T: Transaction + for<'a> Deserialize<'a>,
-        P: Consensus + for<'a> Deserialize<'a>,
     >(
         &self,
         height: u64,
-    ) -> Result<Block<T, P>> {
+    ) -> Result<Block<T, C>> {
         let block_hash = self
             .db
             .get(DbKeys::height_key(height))?
@@ -133,10 +130,9 @@ impl<C: Consensus + for<'a>Deserialize<'a>> BlockChain<C> {
 
     pub fn get_last_block<
         T: Transaction + for<'a> Deserialize<'a>,
-        P: Consensus + for<'a> Deserialize<'a>,
     >(
         &self,
-    ) -> Result<Block<T, P>> {
+    ) -> Result<Block<T, C>> {
         self.get_block(self.get_height()?)
     }
 
