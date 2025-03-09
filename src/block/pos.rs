@@ -69,22 +69,15 @@ impl TransactionSign for PoSTransaction {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PoS {
-    #[serde(skip)]
     pub min_stake_amount: u64,
-    #[serde(skip)]
     pub stake_lock_period: u64, // pledge blocks
-    #[serde(skip)]
     pub annual_interest_rate: f64,
-    #[serde(skip)]
     pub validator_count: usize,
-    #[serde(skip)]
     pub epoch_length: u64,
-    #[serde(skip)]
     pub security_deposit: u64,
 
     pub cur_validators: HashMap<VerifyingKey, u64>,
     // Insecure! For demonstration only
-    #[serde(skip)]
     pub validator_keys: HashMap<VerifyingKey, SecretKey>,
 }
 
@@ -160,8 +153,8 @@ impl Consensus for PoS {
     type Data = PoSData;
 
     fn validate<T: Transaction>(&self, block: &Block<T, Self>) -> bool {
-        let pub_key = block.header.data.validator_key.clone();
-        let signature = block.header.data.signature.clone();
+        let pub_key = block.header.data.validator_key;
+        let signature = block.header.data.signature;
 
         // Check validator has sufficient stake in previous state
         let has_stake = &self
@@ -180,7 +173,7 @@ impl Consensus for PoS {
         let Some(validator_pubkey) = self.select_validator() else {
             bail!("No validator selected");
         };
-        let Some(secret_key) = self.validator_keys.get(&validator_pubkey).cloned() else {
+        let Some(secret_key) = self.validator_keys.get(&validator_pubkey) else {
             bail!("No secret key found");
         };
 

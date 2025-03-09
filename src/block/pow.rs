@@ -13,15 +13,10 @@ use crate::{
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PoW {
-    #[serde(skip)]
     pub target_timespan: u64,
-    #[serde(skip)]
     pub difficulty_adjust_interval: u64,
-    #[serde(skip)]
     pub initial_difficulty: u32,
-    #[serde(skip)]
     pub allow_mining_reward: bool,
-    #[serde(skip)]
     pub block_reward: u64,
     // cur difficulty
     pub cur_bits: u32,
